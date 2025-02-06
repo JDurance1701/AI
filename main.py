@@ -17,7 +17,7 @@ Revision History
 1.1 - Very basic test player
 """
 
-# TODO - Change the PORT and USER_NAME Values before running
+# TODO  Change the PORT and USER_NAME Values before running
 DEBUG = True
 PORT = 10300
 USER_NAME = "jd2112b"
