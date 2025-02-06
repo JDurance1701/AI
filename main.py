@@ -10,7 +10,7 @@ import math
 import random
 
 """
-By Todd Dole, Revision 1.1
+By  Todd Dole, Revision 1.1
 Written for Hardin-Simmons CSCI-4332 Artificial Intelligence
 Revision History
 1.0 - API setup
