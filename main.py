@@ -6,6 +6,8 @@ import uvicorn
 import os
 import signal
 import logging
+import math
+import random
 
 """
 By Todd Dole, Revision 1.1
@@ -17,11 +19,35 @@ Revision History
 
 # TODO - Change the PORT and USER_NAME Values before running
 DEBUG = True
-PORT = 8001
-USER_NAME = "jsmith"
+PORT = 10300
+USER_NAME = "jd2112b"
 # TODO - change your method of saving information from the very rudimentary method here
 hand = [] # list of cards in our hand
 discard = [] # list of cards organized as a stack
+gamehistory = [] # list of game history
+stock = [] # list of cards in the stock pile
+opponentknown = [] # list of cards in the opponent's hand that we know about
+opponentprob = [] # list of cards in the opponent's hand that we think they have
+melds = [] # list of melds we have made
+oppmelds = [] # list of melds the opponent has made
+depth_limit = 3 # depth limit for minimax
+rank_order = {
+    "A": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "9": 9,
+    "10": 10,
+    "J": 11,
+    "Q": 12,
+    "K": 13
+}
+#Deck of 52 cards
+deck = [str(i)+s for i in rank_order.keys() for s in ['C', 'D', 'H', 'S']]
 
 # set up the FastAPI application
 app = FastAPI()
@@ -107,82 +133,253 @@ async def draw(update_info: UpdateInfo):
         return {"play": "draw discard"}
     return {"play": "draw stock"} # Otherwise, draw from stock
 
+
 @app.post("/lay-down/")
 async def lay_down(update_info: UpdateInfo):
-    ''' Game Server calls this endpoint to conclude player's turn with melding and/or discard.'''
-    # TODO - Your code here - everything from here to end of function
-    global hand
-    global discard
+    global hand, discard
     process_events(update_info.event)
-    of_a_kind_count = [0, 0, 0, 0] # how many 1 of a kind, 2 of a kind, etc in our hand
-    last_val = hand[0][0]
-    count = 0
-    for card in hand[1:]:
-        cur_val = card[0]
-        if cur_val == last_val:
-            count+=1
-        else:
-            of_a_kind_count[count] += 1
-            count=0
-        last_val = cur_val
-    if (count!=0): of_a_kind_count[count]+=1 # Need to get the last card fully processed if it is a match to the previous
-    if (of_a_kind_count[0]+of_a_kind_count[1]) > 1:
-        # Too many unmeldable cards, need to discard
 
-        # If we have a 1 of a kind, discard the highest
-        if (of_a_kind_count[0]>0):
-            for i in range(len(hand)-1,-1, -1):
-                if (i==0):
-                    logging.info("Discarding "+hand[0])
-                    return {"play":"discard "+hand.pop(0)}
-                if hand[i][0] != hand[i-1][0]:
-                    logging.info("Discarding "+hand[i])
-                    return {"play":"discard "+hand.pop(i)}
+    current_state = get_current_state()  # Build the state for minimax
 
-        # discard the highest 2 of a kind
-            i=len(hand)-1
-            while (i>0):
-                if (i==1):
-                    logging.info("Discarding "+hand[1])
-                    return {"play":"discard "+hand.pop(1)}
-                if hand[i][0] != hand[i-2][0]:
-                    logging.info("Discarding "+hand[i])
-                    return {"play":"discard "+hand.pop(i)}
-                while hand[i][0] == hand[i-1][0]: i-=1 #skip over meldable sets
-                i-=1
+    # Use MCTS with Minimax for decision-making
+    best_move = mcts_with_minimax(current_state, simulations=100)
 
-    # We should be able to meld.
+    logging.info("Playing best move (MCTS+Minimax): " + str(best_move))
+    return {"play": best_move}
 
-    # First, find the card we discard
-    discard_string = ""
-    print(of_a_kind_count)
-    # TODO - Dole - Need to add edge case for last card being a one-of-a-kind
-    if (of_a_kind_count[0] > 0):
-        for i in range(len(hand)-1, -1, -1):
-            if (i == 0):
-                discard_string = " discard " + hand.pop(0)
-                break
-            if hand[i][0] != hand[i - 1][0]:
-                discard_string = " discard " + hand.pop(i)
-                break
+def get_current_state():
+    # Create a copy of the global game state variables
+    return {
+        'hand': hand.copy(),       # your current hand
+        'discard': discard.copy(), # current discard pile
+        'stock': stock.copy(),     # current stock pile
+        'melds': melds.copy(),     # your current melds
+        'oppmelds': oppmelds.copy(), # opponent's melds
+        'gamehistory': gamehistory.copy(), # game history
+        # Add any other state information you need (e.g., melds, opponent info)
+    }
 
-    # generate our list of meld
-    play_string = ""
-    last_card = ""
-    while (len(hand) > 0):
-        card = hand.pop(0)
-        if (str(card) != last_card):
-            play_string += "meld "
-        play_string += str(card) + " "
-        last_card = str(card)
 
-    # remove the extra space, and add in our discard if any
-    play_string = play_string[:-1]
-    play_string += discard_string
+def generate_moves(state):
+    """Generate all legal moves for the current state."""
+    moves = []
+    hand_copy = state['hand'][:]
 
-    logging.info("Playing: "+play_string)
-    return {"play":play_string}
+    # Generate melds
+    melds = generate_melds(state)
 
+    # Remove melded cards from possible discard options
+    discard_options = set(hand_copy)
+    for meld in melds:
+        for card in meld:
+            discard_options.discard(card)
+
+    # Add possible meld actions
+    for meld in melds:
+        moves.append({"action": "meld", "cards": meld})
+
+    # Add discard actions
+    for card in discard_options:
+        moves.append({"action": "discard", "card": card})
+
+    return moves
+
+def generate_melds(state):
+    """
+    Generate all valid melds in hand:
+    1. Three or more cards of the same rank.
+    2. Three or more sequential cards of the same suit.
+    """
+    melds = []
+
+    # Find sets (same rank)
+    rank_dict = {}
+    for card in state['hand']:
+        rank, suit = card[:-1], card[-1]
+        if rank not in rank_dict:
+            rank_dict[rank] = []
+        rank_dict[rank].append(card)
+
+    for rank, cards in rank_dict.items():
+        if len(cards) >= 3:
+            melds.append(cards[:])  # Copy to avoid modifying original
+
+    # Find runs (same suit, sequential rank)
+    suits = {'C': [], 'D': [], 'H': [], 'S': []}
+    for card in state['hand']:
+        rank, suit = card[:-1], card[-1]
+        suits[suit].append((int(rank_order[rank]), card))
+
+    for suit, cards in suits.items():
+        cards.sort()  # Sort by rank
+        run = []
+        for i in range(len(cards)):
+            if not run or (cards[i][0] == run[-1][0] + 1):
+                run.append(cards[i][1])
+            else:
+                if len(run) >= 3:
+                    melds.append(run[:])  # Copy the run
+                run = [cards[i][1]]
+        if len(run) >= 3:
+            melds.append(run)
+
+    return melds
+
+
+
+
+
+#Probably need to work on this later
+def apply_move(state, move):
+    """
+    Apply a move to the state and return the new state.
+    """
+    new_state = state.copy()  # Copy state to avoid modifying original
+    if move["action"] == "meld":
+        for card in move["cards"]:
+            if card in new_state['hand']:
+                new_state['hand'].remove(card)
+        new_state['melds'].append(move["cards"])
+
+    elif move["action"] == "discard":
+        if move["card"] in new_state['hand']:
+            new_state['hand'].remove(move["card"])
+            new_state['discard'].insert(0, move["card"])  # Add to discard pile
+
+    return new_state
+
+#Probably need to work on this later
+def evaluate(state):
+    """
+    Evaluates the current game state.
+    """
+    score = 0
+
+    # Reward completed melds
+    for meld in state['melds']:
+        score += len(meld) * 10  # More cards in meld = higher score
+
+    # Penalize unmelded high-value cards
+    for card in state['hand']:
+        rank = card[:-1]
+        score -= rank_order[rank]  # Higher cards = higher penalty
+
+    return score
+
+
+def game_over(state):
+    """
+    Determine if the game is over given the state.
+
+    A game of Rummy ends if:
+    1. A player has no cards left.
+    2. (Optional) A player reaches a winning score.
+    3. (Optional) The deck is empty, and no moves are possible.
+    """
+    # Check if any player has no cards left
+    for player_hand in state["hands"]:
+        if len(player_hand) == 0:
+            return True  # The game ends when a player goes out.
+
+    # Check if a score limit is reached (optional rule)
+    if "scores" in state:
+        max_score = max(state["scores"])
+        if max_score >= state.get("winning_score", 100):  # Default winning score = 100
+            return True
+
+    # Check if the deck is empty and no moves are possible
+    if len(state["deck"]) == 0 and not any_valid_moves(state):
+        return True  # No more possible moves, game ends.
+
+    return False  # The game continues
+
+def any_valid_moves(state):
+    """
+    Checks if any player can make a valid move.
+    """
+    for player_hand in state["hands"]:
+        if generate_moves({"hand": player_hand}):
+            return True  # At least one valid move exists.
+    return False  # No moves left.
+
+
+def minimax(state, depth, alpha, beta, maximizing_player):
+    if depth == 0 or game_over(state):
+        return evaluate(state)
+
+    if maximizing_player:
+        max_eval = float('-inf')
+        for move in generate_moves(state):
+            new_state = apply_move(state, move)
+            eval = minimax(new_state, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break  # Alpha-beta pruning
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in generate_moves(state):
+            new_state = apply_move(state, move)
+            eval = minimax(new_state, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break  # Alpha-beta pruning
+        return min_eval
+
+
+#TreeNode
+class TreeNode:
+    def __init__(self, state, parent=None):
+        self.state = state  # Current game state
+        self.parent = parent
+        self.children = []
+        self.visits = 0
+        self.value = 0  # Accumulated reward
+
+    def is_fully_expanded(self):
+        """Checks if all possible moves have been explored."""
+        return len(self.children) == len(generate_moves(self.state))
+
+    def best_child(self, exploration_weight=1.4):
+        """Uses UCB1 formula to select the best child node."""
+        return max(self.children, key=lambda c: (c.value / (c.visits + 1e-6)) +
+                                                exploration_weight * math.sqrt(
+            math.log(self.visits + 1) / (c.visits + 1e-6)))
+
+def mcts_with_minimax(root_state, simulations=100):
+    """Perform MCTS with Minimax rollout."""
+    root = TreeNode(root_state)
+
+    for _ in range(simulations):
+        node = root
+
+        # Selection - Traverse tree using UCB1
+        while node.is_fully_expanded() and node.children:
+            node = node.best_child()
+
+        # Expansion - Add a new child node
+        if not node.is_fully_expanded():
+            untried_moves = [m for m in generate_moves(node.state) if m not in [child.state for child in node.children]]
+            move = random.choice(untried_moves)
+            new_state = apply_move(node.state, move)
+            child_node = TreeNode(new_state, parent=node)
+            node.children.append(child_node)
+            node = child_node
+
+        # Simulation - Instead of random, use Minimax for rollout evaluation
+        value = minimax(node.state, depth_limit, float('-inf'), float('inf'), False)
+
+        # Backpropagation
+        while node:
+            node.visits += 1
+            node.value += value
+            node = node.parent
+
+    # Select the best move after simulations
+    best_move = root.best_child(exploration_weight=0).state  # Choose child with highest avg value
+    return best_move
 @app.get("/shutdown")
 async def shutdown_API():
     ''' Game Server calls this endpoint to shut down the player's client after testing is completed.  Only used if DEBUG is True. '''
