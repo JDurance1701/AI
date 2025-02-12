@@ -292,12 +292,12 @@ async def lay_down(update_info: UpdateInfo):
         is_set = all(card.rank == meld[0].rank for card in meld)  # True if all cards in meld have the same rank
         is_run = not is_set  # If it's not a set, it must be a run
 
-        meld_ranks = {get_rank_value(card.rank) for card in meld}  # Store ranks of cards in the meld
+        meld_ranks = {rank_order[card.rank] for card in meld}    # Store ranks of cards in the meld
         meld_suits = {card.suit for card in meld}  # Store suits of cards in the meld
 
         # Check if any card in the hand can be laid off onto an existing meld
         for card in hand[:]:  # Iterate over a copy of hand to allow safe removal
-            card_rank = get_rank_value(card.rank)  # Get numerical rank value
+            card_rank = rank_order[card.rank]  # Get numerical rank value
 
             if is_set:
                 # A set requires an exact rank match
